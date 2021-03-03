@@ -1,0 +1,9 @@
+kit_version = "v1.0.6"
+
+[http]
+port = 22102
+
+[log]
+save_path = "/Users/caoshuyu/WorkSpace/GoWork/Csy/src/logs"
+
+
