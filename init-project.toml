@@ -1,4 +1,4 @@
-kit_version = "v1.0.7"
+kit_version = "v1.0.8"
 
 [http]
 port = 22102

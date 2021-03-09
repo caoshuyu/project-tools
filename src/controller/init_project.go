@@ -28,6 +28,7 @@ func (*Controller) InitProject(ectx context.Context, input *structure.InitProjec
 		return
 	}
 	buildFileList = append(buildFileList, fList...)
+	buildFileList = append(buildFileList, pf._buildCacheRedis(ectx, input)...)
 	buildFileList = append(buildFileList, pf._buildConf(ectx, input)...)
 	buildFileList = append(buildFileList, pf._buildController(ectx, input)...)
 	buildFileList = append(buildFileList, pf._buildModel(ectx, input)...)
@@ -71,6 +72,7 @@ type projectFile struct {
 	projectPath             string
 	resourcesPath           string
 	srcPath                 string
+	redisPath               string
 	confPath                string
 	controllerPath          string
 	controllerStructurePath string
@@ -106,6 +108,7 @@ func (pf *projectFile) _buildInitProject(ectx context.Context, input *structure.
 			return nil, errors.New("project dir is already used")
 		}
 	}
+	pf.redisPath = pf.srcPath + "/cache/redis"
 	pf.confPath = pf.srcPath + "/conf"
 	pf.controllerPath = pf.srcPath + "/controller"
 	pf.controllerStructurePath = pf.controllerPath + "/structure"
@@ -114,6 +117,9 @@ func (pf *projectFile) _buildInitProject(ectx context.Context, input *structure.
 	buildFileList = append(buildFileList, buildFile{
 		fileType: fileTypeDir,
 		filePath: pf.srcPath,
+	}, buildFile{
+		fileType: fileTypeDir,
+		filePath: pf.redisPath,
 	}, buildFile{
 		fileType: fileTypeDir,
 		filePath: pf.confPath,
@@ -155,40 +161,55 @@ func (pf *projectFile) _buildInitProject(ectx context.Context, input *structure.
 	})
 	//.toml
 	tomlFile := make([]string, 0)
-	switch len(input.Mysql) {
-	case 0:
-		//不使用mysql
-	case 1:
-		//单一mysql
+	if len(input.Mysql) > 0 {
 		tomlFile = append(tomlFile,
 			`# MySQL 配置`,
 			`[mysql]`,
-			`#用户名`,
-			`username = "root"`,
-			`#密码`,
-			`password = "root"`,
-			`#链接地址`,
-			`address = "127.0.0.1:3306"`,
-			`#数据库名称`,
-			`db_name = "`+input.ProjectName+`"`,
-			`#附加请求参数`,
-			`params = "clientFoundRows=false&parseTime=true&loc=Asia%2FShanghai&timeout=5s&collation=utf8mb4_bin&interpolateParams=true"`,
-			`#最大连接数`,
-			`max_open = 100`,
-			`#最大空闲数`,
-			`max_idle = 100`,
-			`#连接生命时长，秒`,
-			`max_lifetime = 300`,
-			``,
 		)
-	default:
-		//超过一个mysql
+		for _, name := range input.Mysql {
+			tomlFile = append(tomlFile,
+				`    [mysql.`+name+`]`,
+				`    #用户名`,
+				`    username = "root"`,
+				`    #密码`,
+				`    password = "root"`,
+				`    #链接地址`,
+				`    address = "127.0.0.1:3306"`,
+				`    #数据库名称`,
+				`    db_name = "`+input.ProjectName+`"`,
+				`    #附加请求参数`,
+				`    params = "clientFoundRows=false&parseTime=true&loc=Asia%2FShanghai&timeout=5s&collation=utf8mb4_bin&interpolateParams=true"`,
+				`    #最大连接数`,
+				`    max_open = 100`,
+				`    #最大空闲数`,
+				`    max_idle = 100`,
+				`    #连接生命时长，秒`,
+				`    max_lifetime = 300`,
+				``,
+			)
+		}
+	}
 
+	if len(input.Redis) > 0 {
+		tomlFile = append(tomlFile,
+			`# Redis 配置`,
+			`[redis]`,
+		)
+		for _, name := range input.Redis {
+			tomlFile = append(tomlFile,
+				`    [redis.`+name+`]`,
+				`    addr = "127.0.0.1:6379"`,
+				`    password = ""`,
+				`    db = 0`,
+			)
+		}
 	}
 
 	tomlFile = append(tomlFile, `[http]`, `port = 0`, ``)
 	tomlFile = append(tomlFile, `[log]`, `save_path =""`, ``)
 	tomlFile = append(tomlFile, `#配置更新授权`, `[conf_key]`, `ak = ""`, `sk = ""`, ``)
+	tomlFile = append(tomlFile, `#放穿透攻击时间`, `[through_attack]`, `time_second = 30`)
+
 	buildFileList = append(buildFileList, buildFile{
 		fileType: fileTypeFile,
 		filePath: pf.projectPath + "/" + input.ProjectName + ".toml",
@@ -228,11 +249,73 @@ func (pf *projectFile) _buildInitProject(ectx context.Context, input *structure.
 	return buildFileList, nil
 }
 
+func (pf *projectFile) _buildCacheRedis(ectx context.Context, input *structure.InitProjectInput) []buildFile {
+	buildFileList := make([]buildFile, 0)
+	redisFile := make([]string, 0)
+	redisFile = append(redisFile, `package redis`, ``)
+	redisFile = append(redisFile, `import (`,
+		`"context"`,
+		`"`+pf.importPath+`/src/conf"`,
+		`"github.com/caoshuyu/kit/redistools"`,
+		`"github.com/go-redis/redis/v8"`,
+		`)`,
+		``,
+	)
+
+	for _, name := range input.Redis {
+		redisFile = append(redisFile, `var `+name+`RedisClient redistools.RedisClient`)
+	}
+	redisFile = append(redisFile, `func InitRedis() error {`, `var err error`)
+	for _, name := range input.Redis {
+		redisFile = append(redisFile,
+			name+`Conf:=redistools.RedisClient{`,
+			`Conf: conf.ConfRead{}.Get`+stringtools.InitialUpdateStr(name)+`RedisConf(),`,
+			`}`,
+			`err = `+name+`Conf.ConnRedis()`,
+			`if nil != err {`, `return err`, `}`,
+			name+`RedisClient = `+name+`Conf`,
+		)
+	}
+	redisFile = append(redisFile, `return nil`, `}`, ``)
+
+	for _, name := range input.Redis {
+		redisFile = append(redisFile,
+			`func Get`+stringtools.InitialUpdateStr(name)+`RedisClient() (client *redis.Client) {`,
+			`return `+name+`RedisClient.Client`,
+			`}`,
+			``,
+		)
+
+		redisFile = append(redisFile,
+			`func Lock`+stringtools.InitialUpdateStr(name)+`Redis(context context.Context, key string, outTime int) (bool, error) {`,
+			`return `+name+`RedisClient.Lock(context, key, outTime)`,
+			`}`,
+			``,
+		)
+
+		redisFile = append(redisFile,
+			`func UnLock`+stringtools.InitialUpdateStr(name)+`Redis(context context.Context, key string) error {`,
+			`return `+name+`RedisClient.UnLock(context, key)`,
+			`}`,
+			``,
+		)
+	}
+
+	buildFileList = append(buildFileList, buildFile{
+		fileType: fileTypeFile,
+		filePath: pf.redisPath + "/redis.go",
+		value:    strings.Join(redisFile, "\n"),
+	})
+
+	return buildFileList
+}
+
 func (pf *projectFile) _buildConf(ectx context.Context, input *structure.InitProjectInput) []buildFile {
 	buildFileList := make([]buildFile, 0)
 	confileFile := make([]string, 0)
 	configStructFile := make([]string, 0)
 	constantFile := make([]string, 0)
+	errorCodeFile := make([]string, 0)
 
 	confileFile = append(confileFile,
 		`package conf`,
@@ -245,6 +328,9 @@ func (pf *projectFile) _buildConf(ectx context.Context, input *structure.InitPro
 	if len(input.Mysql) > 0 {
 		confileFile = append(confileFile, `"github.com/caoshuyu/kit/mysqltools"`)
 	}
+	if len(input.Redis) > 0 {
+		confileFile = append(confileFile, `"github.com/caoshuyu/kit/redistools"`)
+	}
 	confileFile = append(confileFile,
 		`"strconv"`,
 		`"time"`,
@@ -253,14 +339,18 @@ func (pf *projectFile) _buildConf(ectx context.Context, input *structure.InitPro
 	)
 
 	confileFile = append(confileFile, "var requestHttpPort string")
-	switch len(input.Mysql) {
-	case 0:
-	case 1:
-		confileFile = append(confileFile, "var mysql *mysqltools.MySqlConf")
-	default:
-
+	for _, name := range input.Mysql {
+		confileFile = append(confileFile, "var "+name+"Mysql *mysqltools.MySqlConf")
 	}
-	confileFile = append(confileFile, "var confKey confKeyConf", "")
+
+	for _, name := range input.Redis {
+		confileFile = append(confileFile, "var "+name+"Redis *redistools.RedisConf")
+	}
+
+	confileFile = append(confileFile, "var confKey confKeyConf")
+	confileFile = append(confileFile, "var throughAttackTime int64")
+	confileFile = append(confileFile, "")
+
 	confileFile = append(confileFile,
 		"func InitConf() {",
 		`	conf, err := getConf()`,
@@ -271,13 +361,17 @@ func (pf *projectFile) _buildConf(ectx context.Context, input *structure.InitPro
 		`	initLog(&conf)`,
 		`	initConfKey(&conf)`,
 	)
-	switch len(input.Mysql) {
-	case 0:
-	case 1:
-		confileFile = append(confileFile, `mysql = initMysql(&conf)`)
-	default:
-
+	if len(input.Mysql) > 0 {
+		for _, name := range input.Mysql {
+			confileFile = append(confileFile, name+`Mysql = init`+stringtools.InitialUpdateStr(name)+`Mysql(&conf)`)
+		}
 	}
+	if len(input.Redis) > 0 {
+		for _, name := range input.Redis {
+			confileFile = append(confileFile, name+`Redis = init`+stringtools.InitialUpdateStr(name)+`Redis(&conf)`)
+		}
+	}
+	confileFile = append(confileFile, `initThroughAttack(&conf)`)
 	confileFile = append(confileFile, `}`, ``)
 
 	confileFile = append(confileFile,
@@ -303,23 +397,39 @@ func (pf *projectFile) _buildConf(ectx context.Context, input *structure.InitPro
 		``,
 	)
 
-	switch len(input.Mysql) {
-	case 0:
-	case 1:
-		confileFile = append(confileFile,
-			`func initMysql(conf *config) *mysqltools.MySqlConf {`,
-			`	return &mysqltools.MySqlConf{`,
-			`		DbDsn:       conf.Mysql.Username + ":" + conf.Mysql.Password + "@tcp(" + conf.Mysql.Address + ")/" + conf.Mysql.DbName + "?" + conf.Mysql.Params,`,
-			`		MaxOpen:     conf.Mysql.MaxOpen,`,
-			`		MaxIdle:     conf.Mysql.MaxIdle,`,
-			`		DbName:      conf.Mysql.DbName,`,
-			`		MaxLifetime: time.Duration(conf.Mysql.MaxLifetime) * time.Second,`,
-			`	}`,
-			`}`,
-			``,
-		)
-	default:
+	if len(input.Mysql) > 0 {
+		for _, name := range input.Mysql {
+			confileFile = append(confileFile,
+				`func init`+stringtools.InitialUpdateStr(name)+`Mysql(conf *config) *mysqltools.MySqlConf {`,
+				`	return &mysqltools.MySqlConf{`,
+				`		DbDsn:       conf.Mysql.`+stringtools.InitialUpdateStr(name)+`.Username + ":" + conf.Mysql.`+
+					stringtools.InitialUpdateStr(name)+`.Password + "@tcp(" + conf.Mysql.`+stringtools.InitialUpdateStr(name)+
+					`.Address + ")/" + conf.Mysql.`+stringtools.InitialUpdateStr(name)+`.DbName + "?" + conf.Mysql.`+
+					stringtools.InitialUpdateStr(name)+`.Params,`,
+				`		MaxOpen:     conf.Mysql.`+stringtools.InitialUpdateStr(name)+`.MaxOpen,`,
+				`		MaxIdle:     conf.Mysql.`+stringtools.InitialUpdateStr(name)+`.MaxIdle,`,
+				`		DbName:      conf.Mysql.`+stringtools.InitialUpdateStr(name)+`.DbName,`,
+				`		MaxLifetime: time.Duration(conf.Mysql.`+stringtools.InitialUpdateStr(name)+`.MaxLifetime) * time.Second,`,
+				`	}`,
+				`}`,
+				``,
+			)
+		}
+	}
 
+	if len(input.Redis) > 0 {
+		for _, name := range input.Redis {
+			confileFile = append(confileFile,
+				`func init`+stringtools.InitialUpdateStr(name)+`Redis(conf *config) *redistools.RedisConf {`,
+				`return &redistools.RedisConf{`,
+				`Addr:     conf.Redis.`+stringtools.InitialUpdateStr(name)+`.Addr,`,
+				`Password: conf.Redis.`+stringtools.InitialUpdateStr(name)+`.Password,`,
+				`DB:       conf.Redis.`+stringtools.InitialUpdateStr(name)+`.DB,`,
+				`}`,
+				`}`,
+				``,
+			)
+		}
 	}
 
 	confileFile = append(confileFile,
@@ -332,6 +442,13 @@ func (pf *projectFile) _buildConf(ectx context.Context, input *structure.InitPro
 		``,
 	)
 
+	confileFile = append(confileFile,
+		`func initThroughAttack(conf *config) {`,
+		`throughAttackTime = conf.ThroughAttack.TimeSecond`,
+		`}`,
+		``,
+	)
+
 	upList := make([]string, 0)
 	upList = append(upList,
 		`//更新某个特定配置`,
@@ -339,21 +456,19 @@ func (pf *projectFile) _buildConf(ectx context.Context, input *structure.InitPro
 		`	switch confName {`,
 	)
 	caseStr := make([]string, 0)
-	switch len(input.Mysql) {
-	case 0:
-	case 1:
-		caseStr = append(caseStr, `"mysql"`)
-	default:
-
+	if len(input.Mysql) > 0 {
+		for _, name := range input.Mysql {
+			caseStr = append(caseStr, `"mysql.`+name+`"`)
+		}
 	}
+
 	caseStr = append(caseStr, `"log"`)
-	switch len(input.Redis) {
-	case 0:
-	case 1:
-		caseStr = append(caseStr, `"redis"`)
-	default:
-
+	if len(input.Redis) > 0 {
+		for _, name := range input.Redis {
+			caseStr = append(caseStr, `"redis.`+name+`"`)
+		}
 	}
+
 	upList = append(upList, `	case `+strings.Join(caseStr, ",")+":")
 	upList = append(upList,
 		`	default:`,
@@ -366,14 +481,13 @@ func (pf *projectFile) _buildConf(ectx context.Context, input *structure.InitPro
 		`	}`,
 		`	switch confName {`,
 	)
-	switch len(input.Mysql) {
-	case 0:
-	case 1:
-		upList = append(upList,
-			`	case "mysql":`,
-			`		mysql = initMysql(&conf)`)
-	default:
-
+	if len(input.Mysql) > 0 {
+		for _, name := range input.Mysql {
+			upList = append(upList,
+				`	case "mysql.`+stringtools.InitialUpdateStr(name)+`":`,
+				name+`Mysql = init`+stringtools.InitialUpdateStr(name)+`Mysql(&conf)`,
+			)
+		}
 	}
 
 	upList = append(upList, `	case "log":`, `		initLog(&conf)`, `	}`)
@@ -383,26 +497,35 @@ func (pf *projectFile) _buildConf(ectx context.Context, input *structure.InitPro
 
 	confileFile = append(confileFile, `type ConfRead struct {}`)
 
-	switch len(input.Mysql) {
-	case 0:
-	case 1:
-		confileFile = append(confileFile,
-			`//新配置未生效MySQL配置`,
-			`func (ConfRead) NewConfGetMysqlConf() (*mysqltools.MySqlConf, error) {`,
-			`	conf, err := getConf()`,
-			`	if nil != err {`,
-			`		return nil, err`,
-			`	}`,
-			`	return initMysql(&conf), nil`,
-			`}`,
-			``,
-			`func (ConfRead) GetMysqlConf() *mysqltools.MySqlConf {`,
-			`	return mysql`,
-			`}`,
-			``,
-		)
-	default:
+	if len(input.Mysql) > 0 {
+		for _, name := range input.Mysql {
+			confileFile = append(confileFile,
+				`//新配置未生效MySQL配置`,
+				`func (ConfRead) NewConfGet`+stringtools.InitialUpdateStr(name)+`MysqlConf() (*mysqltools.MySqlConf, error) {`,
+				`	conf, err := getConf()`,
+				`	if nil != err {`,
+				`		return nil, err`,
+				`	}`,
+				`	return init`+stringtools.InitialUpdateStr(name)+`Mysql(&conf), nil`,
+				`}`,
+				``,
+				`func (ConfRead) Get`+stringtools.InitialUpdateStr(name)+`MysqlConf() *mysqltools.MySqlConf {`,
+				`	return `+name+`Mysql`,
+				`}`,
+				``,
+			)
+		}
+	}
 
+	if len(input.Redis) > 0 {
+		for _, name := range input.Redis {
+			confileFile = append(confileFile,
+				`func (ConfRead) Get`+stringtools.InitialUpdateStr(name)+`RedisConf() *redistools.RedisConf {`,
+				`return `+name+`Redis`,
+				`}`,
+				``,
+			)
+		}
 	}
 
 	confileFile = append(confileFile,
@@ -418,24 +541,34 @@ func (pf *projectFile) _buildConf(ectx context.Context, input *structure.InitPro
 		``,
 	)
 
+	confileFile = append(confileFile, `func (ConfRead) GetThroughAttackTime() int64 {`, `return throughAttackTime`, `}`, ``)
+
 	configStructFile = append(configStructFile, `package conf`, ``)
 	configStructFile = append(configStructFile, `type config struct {`)
-	switch len(input.Mysql) {
-	case 0:
-	case 1:
-		configStructFile = append(configStructFile, `	Mysql     mysqlConf`)
-	default:
+	if len(input.Mysql) > 0 {
+		configStructFile = append(configStructFile, `Mysql     mysqlConfList`)
 	}
+	if len(input.Redis) > 0 {
+		configStructFile = append(configStructFile, `Redis         redisConfList`)
+	}
+
 	configStructFile = append(configStructFile,
 		`	Http      httpConf`,
 		`	Log       logConf`,
 		`	ConfKey   confKeyConf`,
+		"ThroughAttack throughAttackConf `toml:\"through_attack\"`",
 	)
 	configStructFile = append(configStructFile, `}`)
 
-	switch len(input.Mysql) {
-	case 0:
-	case 1:
+	if len(input.Mysql) > 0 {
+		configStructFile = append(configStructFile, `type mysqlConfList struct {`)
+		for _, name := range input.Mysql {
+			configStructFile = append(configStructFile,
+				stringtools.InitialUpdateStr(name)+" mysqlConf `toml:\""+name+"\"`",
+			)
+		}
+		configStructFile = append(configStructFile, `}`, ``)
+
 		configStructFile = append(configStructFile,
 			`type mysqlConf struct {`,
 			`	Username    string`,
@@ -449,9 +582,26 @@ func (pf *projectFile) _buildConf(ectx context.Context, input *structure.InitPro
 			`}`,
 			``,
 		)
-	default:
-
 	}
+
+	if len(input.Redis) > 0 {
+		configStructFile = append(configStructFile, `type redisConfList struct {`)
+		for _, name := range input.Redis {
+			configStructFile = append(configStructFile,
+				stringtools.InitialUpdateStr(name)+" redisConf `toml:\""+name+"\"`")
+		}
+		configStructFile = append(configStructFile, `}`, ``)
+
+		configStructFile = append(configStructFile,
+			`type redisConf struct {`,
+			`Addr     string`,
+			`Password string`,
+			`DB       int`,
+			`}`,
+			``,
+		)
+	}
+
 	configStructFile = append(configStructFile,
 		`type httpConf struct {`,
 		`	Port int`,
@@ -472,8 +622,27 @@ func (pf *projectFile) _buildConf(ectx context.Context, input *structure.InitPro
 		``,
 	)
 
+	configStructFile = append(configStructFile,
+		`type throughAttackConf struct {`, "TimeSecond int64 `toml:\"time_second\"`", `}`, ``)
+
 	constantFile = append(constantFile, "package conf", "")
 	constantFile = append(constantFile, `const SERVER_NAME = "`+input.ProjectName+`"`)
+
+	errorCodeFile = append(errorCodeFile, "package conf", "")
+	errorCodeFile = append(errorCodeFile, "var errorMap = map[string]int64{", "", "}")
+	errorCodeFile = append(errorCodeFile, "const (", "", ")")
+	errorCodeFile = append(errorCodeFile,
+		`func GetErrorCode(err error) int64 {`,
+		`	if nil == err {`,
+		`		return 0`,
+		`	}`,
+		`	code, h := errorMap[err.Error()]`,
+		`	if !h {`,
+		`		return 2`,
+		`	}`,
+		`	return code`,
+		`}`,
+	)
 
 	buildFileList = append(buildFileList,
 		buildFile{
@@ -491,8 +660,12 @@ func (pf *projectFile) _buildConf(ectx context.Context, input *structure.InitPro
 			filePath: pf.confPath + "/constant.go",
 			value:    strings.Join(constantFile, "\n"),
 		},
+		buildFile{
+			fileType: fileTypeFile,
+			filePath: pf.confPath + "/error_code.go",
+			value:    strings.Join(errorCodeFile, "\n"),
+		},
 	)
-
 	return buildFileList
 }
 
@@ -502,17 +675,24 @@ func (pf *projectFile) _buildController(ectx context.Context, input *structure.I
 	confServiceFile := make([]string, 0)
 
 	baseFile = append(baseFile, `package controller`, ``)
+	baseFile = append(baseFile, `import (`)
 	if len(input.Mysql) > 0 {
-		baseFile = append(baseFile, `import "`+pf.importPath+`/src/model"`)
+		baseFile = append(baseFile, `"`+pf.importPath+`/src/model"`)
 	}
+	if len(input.Redis) > 0 {
+		baseFile = append(baseFile, `"`+pf.importPath+`/src/cache/redis"`)
+	}
+	baseFile = append(baseFile, `)`)
+
 	baseFile = append(baseFile, "type Controller struct {}")
 	baseFile = append(baseFile, "//初始化数据库信息", "func InitDb() {")
-	switch len(input.Mysql) {
-	case 0:
-	case 1:
-		baseFile = append(baseFile, `//初始化MySQL数据库信息`, `model.Get`+stringtools.InitialUpdateStr(input.Mysql[0])+`Db()`)
-	default:
-
+	if len(input.Mysql) > 0 {
+		for _, name := range input.Mysql {
+			baseFile = append(baseFile, `//初始化MySQL数据库信息`, `model.Get`+stringtools.InitialUpdateStr(name)+`MysqlDb()`)
+		}
+	}
+	if len(input.Redis) > 0 {
+		baseFile = append(baseFile, `//初始化Redis数据库信息`, `err := redis.InitRedis()`, `if nil != err {`, `panic(err)`, `}`)
 	}
 	baseFile = append(baseFile, "}")
 
@@ -552,29 +732,29 @@ func (pf *projectFile) _buildController(ectx context.Context, input *structure.I
 		`}`,
 		``,
 	)
-	switch len(input.Mysql) {
-	case 0:
-	case 1:
-		confServiceFile = append(confServiceFile,
-			`case "mysql":`,
-			`//检测新数据连接是否可用`,
-			`newConf, err := conf.ConfRead{}.NewConfGetMysqlConf()`,
-			`if nil != err {`,
-			`return err`,
-			`}`,
-			`client, err := model.ConnectMysqlDb(newConf)`,
-			`if nil != err {`,
-			`return err`,
-			`}`,
-			`//更新数据库链接`,
-			`err = conf.UpdateConf(name)`,
-			`if nil != err {`,
-			`return err`,
-			`}`,
-			`model.Update`+stringtools.InitialUpdateStr(input.Mysql[0])+`Db(client)`,
-			``,
-		)
-	default:
+	if len(input.Mysql) > 0 {
+		for _, name := range input.Mysql {
+			confServiceFile = append(confServiceFile,
+				`case "mysql.`+name+`":`,
+				`//检测新数据连接是否可用`,
+				`newConf, err := conf.ConfRead{}.NewConfGet`+stringtools.InitialUpdateStr(name)+`MysqlConf()`,
+				`if nil != err {`,
+				`return err`,
+				`}`,
+				`client, err := model.ConnectMysqlDb(newConf)`,
+				`if nil != err {`,
+				`return err`,
+				`}`,
+				`//更新数据库链接`,
+				`err = conf.UpdateConf(name)`,
+				`if nil != err {`,
+				`return err`,
+				`}`,
+				`model.Update`+stringtools.InitialUpdateStr(name)+`MysqlDb(client)`,
+				``,
+			)
+
+		}
 
 	}
 
@@ -661,7 +841,7 @@ func (pf *projectFile) _buildModelMysql(ectx context.Context, mysqlList []string
 
 	//声明变量
 	for _, dbName := range mysqlList {
-		mysqldbFile = append(mysqldbFile, `var `+dbName+`DbClient *mysqltools.MysqlClient`)
+		mysqldbFile = append(mysqldbFile, `var `+dbName+`MysqlClient *mysqltools.MysqlClient`)
 	}
 	mysqldbFile = append(mysqldbFile, ``)
 
@@ -682,20 +862,20 @@ func (pf *projectFile) _getOneMysqlDbCode(ectx context.Context, dbName string) (
 
 	funcCode = append(funcCode,
 		`//获取链接`,
-		`func Get`+stringtools.InitialUpdateStr(dbName)+`Db() *sql.DB {`,
-		`	if nil == `+dbName+`DbClient {`,
-		`		client, err := ConnectMysqlDb(conf.ConfRead{}.GetMysqlConf())`,
+		`func Get`+stringtools.InitialUpdateStr(dbName)+`MysqlDb() *sql.DB {`,
+		`	if nil == `+dbName+`MysqlClient {`,
+		`		client, err := ConnectMysqlDb(conf.ConfRead{}.Get`+stringtools.InitialUpdateStr(dbName)+`MysqlConf())`,
 		`		if nil != err {`,
 		`			panic(err)`,
 		`		}`,
-		`		`+dbName+`DbClient = client`,
+		`		`+dbName+`MysqlClient = client`,
 		`	}`,
-		`	return `+dbName+`DbClient.Client`,
+		`	return `+dbName+`MysqlClient.Client`,
 		`}`,
 	)
 	funcCode = append(funcCode,
-		`func Update`+stringtools.InitialUpdateStr(dbName)+`Db(newClient *mysqltools.MysqlClient) {`,
-		`	`+dbName+`DbClient = newClient`,
+		`func Update`+stringtools.InitialUpdateStr(dbName)+`MysqlDb(newClient *mysqltools.MysqlClient) {`,
+		`	`+dbName+`MysqlClient = newClient`,
 		`}`,
 	)
 	return funcCode
