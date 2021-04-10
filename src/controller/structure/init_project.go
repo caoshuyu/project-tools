@@ -11,3 +11,9 @@ type InitProjectInput struct {
 
 type InitProjectOut struct {
 }
+
+type BuildModelFileInput struct {
+}
+
+type BuildModelFileOut struct {
+}

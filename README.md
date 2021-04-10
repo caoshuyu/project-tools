@@ -10,12 +10,12 @@ init-project 项目初始化工具
 ```json
 {
     "project_name":"id_generator",
-    "save_path":"/Users/caoshuyu/WorkSpace/GoWork/Test/src",
+    "save_path":"/Users/caoshuyu/WorkSpace/GoWork/Test/src/github.com/caoshuyu/",
     "project_path":"github.com/caoshuyu/",
     "open_update_conf":true,
     "mysql":[
         "master",
-        "selave"
+        "slave"
     ],
     "redis":[
         "master"

@@ -45,5 +45,8 @@ func router(e *echo.Echo) {
 
 //业务接口
 func businessRouter(e *echo.Echo) {
+	//初始化项目
 	e.POST("/init_project", brf.initProject)
+	//生成项目可用model文件
+	e.POST("/build_model_file", brf.buildModelFile)
 }

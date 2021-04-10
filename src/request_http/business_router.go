@@ -20,8 +20,21 @@ func (*businessRouterFunc) initProject(ectx echo.Context) (err error) {
 	if err = ectx.Bind(req); err != nil {
 		return echo_out_tools.EchoErrorData(ectx, err, 2)
 	}
-	var ctx context.Context
+	ctx := context.Background()
 	_, err = cont.InitProject(ctx, req)
+	if err != nil {
+		return echo_out_tools.EchoErrorData(ectx, err, 2)
+	}
+	return echo_out_tools.EchoSuccessData(ectx, "{}")
+}
+
+func (*businessRouterFunc) buildModelFile(ectx echo.Context) (err error) {
+	req := new(structure.BuildModelFileInput)
+	if err = ectx.Bind(req); err != nil {
+		return echo_out_tools.EchoErrorData(ectx, err, 2)
+	}
+	ctx := context.Background()
+	_, err = cont.BuildModelFile(ctx, req)
 	if err != nil {
 		return echo_out_tools.EchoErrorData(ectx, err, 2)
 	}

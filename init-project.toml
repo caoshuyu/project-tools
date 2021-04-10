@@ -1,7 +1,7 @@
 kit_version = "v1.0.8"
 
 [http]
-port = 22102
+port = 11111
 
 [log]
 save_path = "/Users/caoshuyu/WorkSpace/GoWork/Csy/src/logs"
